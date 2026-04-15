@@ -189,6 +189,7 @@ class Drone:
         self.prev_position: Coordinate = position
         self.search_index: int = 0
         self.search_target: Optional[Coordinate] = None
+        self.secondary_target: Optional[Coordinate] = None
         self.role: str = "search"
         self.stuck_steps: int = 0
 
@@ -317,12 +318,20 @@ class Drone:
             return "investigate"
         return "search"
 
-    def set_intention(self, role: str, target: Optional[Coordinate]) -> None:
+    def set_intention(
+        self,
+        role: str,
+        target: Optional[Coordinate],
+        secondary_target: Optional[Coordinate] = None,
+    ) -> None:
         self.role = role
         self.target = target
+        self.secondary_target = secondary_target
         self.intentions = [f"role:{role}"]
         if target is not None:
             self.intentions.append(f"move_to:{target}")
+        if secondary_target is not None:
+            self.intentions.append(f"secondary:{secondary_target}")
         history = list(self.beliefs.get("role_history", []))
         history.append(role)
         self.beliefs["role_history"] = history[-25:]
@@ -358,6 +367,10 @@ class Drone:
         return []
 
     def propose_move(self, world: GridWorld, occupied_now: set[Coordinate], reserved_next: set[Coordinate]) -> Coordinate:
+        if self.target is not None and self.position == self.target and self.secondary_target is not None:
+            if world.passable(self.secondary_target):
+                self.target, self.secondary_target = self.secondary_target, None
+
         if self.target is None:
             return self.position
 
@@ -742,6 +755,7 @@ def snapshot_current_plan(drones: List[Drone]) -> Dict[int, Dict[str, Any]]:
         drone.id: {
             "role": drone.role,
             "target": list(drone.target) if isinstance(drone.target, tuple) else None,
+            "secondary_target": list(drone.secondary_target) if isinstance(drone.secondary_target, tuple) else None,
         }
         for drone in drones
     }
@@ -756,7 +770,9 @@ def apply_plan_snapshot(world: GridWorld, drones: List[Drone], plan_snapshot: Di
             continue
         role = str(entry.get("role", "search"))
         target_raw = entry.get("target")
+        secondary_raw = entry.get("secondary_target")
         target = tuple(target_raw) if isinstance(target_raw, list) and len(target_raw) == 2 else None
+        secondary_target = tuple(secondary_raw) if isinstance(secondary_raw, list) and len(secondary_raw) == 2 else None
         if role not in ALLOWED_ROLES:
             role = "search"
         if target is not None:
@@ -764,7 +780,11 @@ def apply_plan_snapshot(world: GridWorld, drones: List[Drone], plan_snapshot: Di
             if not SafetyManager.validate_target(world, target) or target in used_targets:
                 continue
             used_targets.add(target)
-        drone.set_intention(role, target)
+        if secondary_target is not None:
+            secondary_target = (int(secondary_target[0]), int(secondary_target[1]))
+            if not SafetyManager.validate_target(world, secondary_target) or secondary_target == target:
+                secondary_target = None
+        drone.set_intention(role, target, secondary_target=secondary_target)
         applied += 1
     return applied
 
@@ -781,7 +801,7 @@ def remember_plan(planner_memory: Dict[str, Any], drones: List[Drone], mode: str
 def validate_and_finalize_assignments(
     world: GridWorld,
     drones: List[Drone],
-    proposed: Dict[int, Tuple[str, Optional[Coordinate]]],
+    proposed: Dict[int, Tuple[str, Optional[Coordinate], Optional[Coordinate]]],
     planner_memory: Dict[str, Any],
     mode: str,
 ) -> int:
@@ -792,7 +812,7 @@ def validate_and_finalize_assignments(
     for drone in drones:
         if drone.id not in proposed:
             continue
-        role, target = proposed[drone.id]
+        role, target, secondary_target = proposed[drone.id]
         if role not in ALLOWED_ROLES:
             role = "search"
         if target is not None:
@@ -801,7 +821,12 @@ def validate_and_finalize_assignments(
             if target in used_targets:
                 continue
             used_targets.add(target)
-        drone.set_intention(role, target)
+        if secondary_target is not None:
+            if not SafetyManager.validate_target(world, secondary_target):
+                secondary_target = None
+            elif secondary_target == target:
+                secondary_target = None
+        drone.set_intention(role, target, secondary_target=secondary_target)
         assigned_ids.add(drone.id)
         applied += 1
 
@@ -823,7 +848,7 @@ def validate_and_finalize_assignments(
             elif cand["type"] == "reposition":
                 chosen_role = "reposition"
             break
-        drone.set_intention(chosen_role, chosen)
+        drone.set_intention(chosen_role, chosen, secondary_target=None)
         if chosen is not None:
             reserved_targets.add(chosen)
         applied += 1
@@ -1009,6 +1034,7 @@ Erfinde nur dann ein anderes Ziel, wenn es zwingend strategisch besser ist.
 - Berücksichtige Distanz
 - Nutze chokepoints und Ringpositionen
 - Nutze Coverage statt Clusterbildung
+- Nutze secondary_target als robusten Backup-Plan bei blockiertem Primärziel
 - Wenn es eine frische letzte Sichtung gibt: Fluchtwege blockieren
 - Wenn die Lage unklar ist: Informationsgewinn priorisieren
 
@@ -1372,15 +1398,19 @@ def assign_targets_with_llm_hybrid(
         return False
 
     assignments = data.get("assignments", [])
-    proposed: Dict[int, Tuple[str, Optional[Coordinate]]] = {}
+    proposed: Dict[int, Tuple[str, Optional[Coordinate], Optional[Coordinate]]] = {}
 
     for item in assignments:
         try:
             drone_id = int(item["id"])
             role = str(item.get("role", "search"))
             primary = item["primary_target"]
+            secondary = item.get("secondary_target")
             target = (int(primary[0]), int(primary[1]))
-            proposed[drone_id] = (role, target)
+            secondary_target = None
+            if isinstance(secondary, list) and len(secondary) == 2:
+                secondary_target = (int(secondary[0]), int(secondary[1]))
+            proposed[drone_id] = (role, target, secondary_target)
         except Exception:
             continue
 
