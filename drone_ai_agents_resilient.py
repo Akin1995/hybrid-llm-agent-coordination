@@ -367,14 +367,32 @@ class Drone:
         return []
 
     def propose_move(self, world: GridWorld, occupied_now: set[Coordinate], reserved_next: set[Coordinate]) -> Coordinate:
-        if self.target is not None and self.position == self.target and self.secondary_target is not None:
-            if world.passable(self.secondary_target):
+        def maybe_promote_secondary(force: bool = False) -> None:
+            if self.secondary_target is None:
+                return
+            if not world.passable(self.secondary_target):
+                return
+            if force or self.position == self.target:
                 self.target, self.secondary_target = self.secondary_target, None
+
+        if self.target is not None and not world.passable(self.target):
+            maybe_promote_secondary(force=True)
+        if self.target is not None and self.position == self.target:
+            maybe_promote_secondary(force=True)
 
         if self.target is None:
             return self.position
 
         path = self.compute_path_with_vision(world, self.target, (occupied_now - {self.position}) | reserved_next)
+        if not path and self.secondary_target is not None:
+            secondary_path = self.compute_path_with_vision(
+                world,
+                self.secondary_target,
+                (occupied_now - {self.position}) | reserved_next,
+            )
+            if secondary_path:
+                self.target, self.secondary_target = self.secondary_target, None
+                path = secondary_path
         if path:
             return path[0]
 
@@ -643,6 +661,8 @@ def build_strategic_planner_state(world: GridWorld, drones: List["Drone"], thief
             "id": drone.id,
             "position": [drone.position[0], drone.position[1]],
             "role": drone.role,
+            "active_target": [drone.target[0], drone.target[1]] if isinstance(drone.target, tuple) else None,
+            "secondary_target": [drone.secondary_target[0], drone.secondary_target[1]] if isinstance(drone.secondary_target, tuple) else None,
             "stuck_steps": drone.stuck_steps,
             "last_known_thief_pos": [last_known[0], last_known[1]] if isinstance(last_known, tuple) else None,
             "last_known_thief_step": drone.beliefs.get("last_known_thief_step"),
@@ -1064,6 +1084,8 @@ def build_llm_prompt_state(world: GridWorld, drones: List[Drone], thief: Thief) 
             "id": d.id,
             "position": d.position,
             "role": d.role,
+            "active_target": d.target,
+            "secondary_target": d.secondary_target,
             "beliefs": {
                 "last_known_thief_pos": d.beliefs.get("last_known_thief_pos"),
                 "estimated_thief_pos": d.beliefs.get("estimated_thief_pos"),
