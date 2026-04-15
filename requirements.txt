@@ -1,0 +1,11 @@
+# Core scientific / plotting
+matplotlib>=3.7
+
+# Image / GIF generation
+Pillow>=10.0
+
+# Optional: LLM integration (OpenAI API)
+openai>=1.0.0
+
+# (Optional but recommended for dev/debug)
+numpy>=1.24
