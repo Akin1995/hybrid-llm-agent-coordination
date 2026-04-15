@@ -259,4 +259,3 @@ Setze `seed` auf einen festen Wert. So bleiben Initialisierung und Zufallsschrit
 
 ---
 
-Wenn du möchtest, kann als nächster Schritt eine **CLI mit Argumenten** (z. B. `--num-drones`, `--max-steps`, `--use-llm`) ergänzt werden, damit du nicht jedes Mal den Python-Code direkt anpassen musst.
