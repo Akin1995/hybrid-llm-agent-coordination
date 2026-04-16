@@ -16,7 +16,7 @@ except Exception:
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.patches import Circle
+from matplotlib.patches import Circle, Rectangle, Polygon
 
 
 Coordinate = Tuple[int, int]
@@ -1395,21 +1395,85 @@ def assign_targets_with_llm_hybrid(
     return applied > 0
 
 
-def draw_state(world: GridWorld, drones: List[Drone], thief: Thief, step: int, path: str, show_vision: bool = True) -> None:
+def draw_state(
+    world: GridWorld,
+    drones: List[Drone],
+    thief: Thief,
+    step: int,
+    path: str,
+    show_vision: bool = True,
+    obstacle_scale: float = 1.35,
+) -> None:
     fig, ax = plt.subplots(figsize=(10, 10))
     ax.set_xlim(0, world.width)
     ax.set_ylim(0, world.height)
     ax.set_xticks([])
     ax.set_yticks([])
     ax.invert_yaxis()
+    ax.set_facecolor("#8BC34A")
+
+    # Gras-Textur als semantischer Boden
+    for gx in range(world.width):
+        for gy in range(world.height):
+            grass = Rectangle((gx, gy), 1, 1, facecolor="#9CCC65", edgecolor="#7CB342", linewidth=0.2, alpha=0.35)
+            ax.add_patch(grass)
 
     for (x, y) in world.static_obstacles:
-        rect = plt.Rectangle((x, y), 1, 1, color="black")
-        ax.add_patch(rect)
+        # Baumdarstellung: Stamm + Blätterkrone
+        def scaled_center(px: float, py: float) -> Tuple[float, float]:
+            return (x + 0.5 + (px - 0.5) * obstacle_scale, y + 0.5 + (py - 0.5) * obstacle_scale)
+
+        def scaled_rect(lx: float, ly: float, w: float, h: float) -> Tuple[float, float, float, float]:
+            cx = lx + w / 2
+            cy = ly + h / 2
+            scx = 0.5 + (cx - 0.5) * obstacle_scale
+            scy = 0.5 + (cy - 0.5) * obstacle_scale
+            sw = w * obstacle_scale
+            sh = h * obstacle_scale
+            return (x + scx - sw / 2, y + scy - sh / 2, sw, sh)
+
+        tx, ty, tw, th = scaled_rect(0.42, 0.56, 0.16, 0.34)
+        c1x, c1y = scaled_center(0.5, 0.42)
+        c2x, c2y = scaled_center(0.35, 0.48)
+        c3x, c3y = scaled_center(0.65, 0.48)
+
+        trunk = Rectangle((tx, ty), tw, th, facecolor="#6D4C41", edgecolor="#4E342E", linewidth=0.5)
+        crown_main = Circle((c1x, c1y), 0.24 * obstacle_scale, facecolor="#2E7D32", edgecolor="#1B5E20", linewidth=0.6)
+        crown_left = Circle((c2x, c2y), 0.16 * obstacle_scale, facecolor="#388E3C", edgecolor="#1B5E20", linewidth=0.5)
+        crown_right = Circle((c3x, c3y), 0.16 * obstacle_scale, facecolor="#388E3C", edgecolor="#1B5E20", linewidth=0.5)
+        ax.add_patch(trunk)
+        ax.add_patch(crown_main)
+        ax.add_patch(crown_left)
+        ax.add_patch(crown_right)
 
     for obs in world.dynamic_obstacles:
-        rect = plt.Rectangle((obs.position[0], obs.position[1]), 1, 1, color="dimgray")
-        ax.add_patch(rect)
+        # Personendarstellung: Kopf + Körper + Beine
+        ox, oy = obs.position
+        def scaled_point(px: float, py: float) -> Tuple[float, float]:
+            return (ox + 0.5 + (px - 0.5) * obstacle_scale, oy + 0.5 + (py - 0.5) * obstacle_scale)
+
+        def scaled_rect_human(lx: float, ly: float, w: float, h: float) -> Tuple[float, float, float, float]:
+            cx = lx + w / 2
+            cy = ly + h / 2
+            scx = 0.5 + (cx - 0.5) * obstacle_scale
+            scy = 0.5 + (cy - 0.5) * obstacle_scale
+            sw = w * obstacle_scale
+            sh = h * obstacle_scale
+            return (ox + scx - sw / 2, oy + scy - sh / 2, sw, sh)
+
+        hx, hy = scaled_point(0.5, 0.28)
+        bx, by, bw, bh = scaled_rect_human(0.42, 0.40, 0.16, 0.28)
+        l1 = [scaled_point(0.42, 0.68), scaled_point(0.48, 0.92), scaled_point(0.52, 0.68)]
+        l2 = [scaled_point(0.58, 0.68), scaled_point(0.52, 0.92), scaled_point(0.48, 0.68)]
+
+        head = Circle((hx, hy), 0.12 * obstacle_scale, facecolor="#FFCCBC", edgecolor="#8D6E63", linewidth=0.5)
+        body = Rectangle((bx, by), bw, bh, facecolor="#455A64", edgecolor="#263238", linewidth=0.5)
+        leg_left = Polygon(l1, closed=True, facecolor="#263238", edgecolor="#1C313A", linewidth=0.4)
+        leg_right = Polygon(l2, closed=True, facecolor="#263238", edgecolor="#1C313A", linewidth=0.4)
+        ax.add_patch(head)
+        ax.add_patch(body)
+        ax.add_patch(leg_left)
+        ax.add_patch(leg_right)
 
     if show_vision:
         for drone in drones:
@@ -1425,7 +1489,7 @@ def draw_state(world: GridWorld, drones: List[Drone], thief: Thief, step: int, p
         top_cells = sorted(team_prob.items(), key=lambda kv: kv[1], reverse=True)[:20]
         for (x, y), prob in top_cells:
             alpha = min(0.25, 0.05 + prob)
-            rect = plt.Rectangle((x, y), 1, 1, color="gold", alpha=alpha)
+            rect = Rectangle((x, y), 1, 1, color="gold", alpha=alpha)
             ax.add_patch(rect)
 
     colors = ["blue", "green", "orange", "purple", "brown", "pink"]
