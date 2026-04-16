@@ -16,7 +16,7 @@ except Exception:
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.patches import Circle
+from matplotlib.patches import Circle, Rectangle, Polygon
 
 
 Coordinate = Tuple[int, int]
@@ -1402,14 +1402,36 @@ def draw_state(world: GridWorld, drones: List[Drone], thief: Thief, step: int, p
     ax.set_xticks([])
     ax.set_yticks([])
     ax.invert_yaxis()
+    ax.set_facecolor("#8BC34A")
+
+    # Gras-Textur als semantischer Boden
+    for gx in range(world.width):
+        for gy in range(world.height):
+            grass = Rectangle((gx, gy), 1, 1, facecolor="#9CCC65", edgecolor="#7CB342", linewidth=0.2, alpha=0.35)
+            ax.add_patch(grass)
 
     for (x, y) in world.static_obstacles:
-        rect = plt.Rectangle((x, y), 1, 1, color="black")
-        ax.add_patch(rect)
+        # Baumdarstellung: Stamm + Blätterkrone
+        trunk = Rectangle((x + 0.42, y + 0.56), 0.16, 0.34, facecolor="#6D4C41", edgecolor="#4E342E", linewidth=0.5)
+        crown_main = Circle((x + 0.5, y + 0.42), 0.24, facecolor="#2E7D32", edgecolor="#1B5E20", linewidth=0.6)
+        crown_left = Circle((x + 0.35, y + 0.48), 0.16, facecolor="#388E3C", edgecolor="#1B5E20", linewidth=0.5)
+        crown_right = Circle((x + 0.65, y + 0.48), 0.16, facecolor="#388E3C", edgecolor="#1B5E20", linewidth=0.5)
+        ax.add_patch(trunk)
+        ax.add_patch(crown_main)
+        ax.add_patch(crown_left)
+        ax.add_patch(crown_right)
 
     for obs in world.dynamic_obstacles:
-        rect = plt.Rectangle((obs.position[0], obs.position[1]), 1, 1, color="dimgray")
-        ax.add_patch(rect)
+        # Personendarstellung: Kopf + Körper + Beine
+        ox, oy = obs.position
+        head = Circle((ox + 0.5, oy + 0.28), 0.12, facecolor="#FFCCBC", edgecolor="#8D6E63", linewidth=0.5)
+        body = Rectangle((ox + 0.42, oy + 0.40), 0.16, 0.28, facecolor="#455A64", edgecolor="#263238", linewidth=0.5)
+        leg_left = Polygon([(ox + 0.42, oy + 0.68), (ox + 0.48, oy + 0.92), (ox + 0.52, oy + 0.68)], closed=True, facecolor="#263238", edgecolor="#1C313A", linewidth=0.4)
+        leg_right = Polygon([(ox + 0.58, oy + 0.68), (ox + 0.52, oy + 0.92), (ox + 0.48, oy + 0.68)], closed=True, facecolor="#263238", edgecolor="#1C313A", linewidth=0.4)
+        ax.add_patch(head)
+        ax.add_patch(body)
+        ax.add_patch(leg_left)
+        ax.add_patch(leg_right)
 
     if show_vision:
         for drone in drones:
@@ -1425,7 +1447,7 @@ def draw_state(world: GridWorld, drones: List[Drone], thief: Thief, step: int, p
         top_cells = sorted(team_prob.items(), key=lambda kv: kv[1], reverse=True)[:20]
         for (x, y), prob in top_cells:
             alpha = min(0.25, 0.05 + prob)
-            rect = plt.Rectangle((x, y), 1, 1, color="gold", alpha=alpha)
+            rect = Rectangle((x, y), 1, 1, color="gold", alpha=alpha)
             ax.add_patch(rect)
 
     colors = ["blue", "green", "orange", "purple", "brown", "pink"]
