@@ -899,6 +899,7 @@ def choose_team_plan(
             use_structured=llm_structured,
         )
         if planned:
+            print("[LLM] Antwort erfolgreich verarbeitet und Team-Assignments angewendet.")
             planner_memory["consecutive_llm_failures"] = 0
             planner_memory["freeze_steps_remaining"] = max(1, int(planner_memory.get("horizon", 5)) - 1)
             planner_memory["last_successful_source"] = "llm"
@@ -911,6 +912,7 @@ def choose_team_plan(
                 assignments_applied=len(drones),
             )
 
+        print("[LLM] Antwort nicht nutzbar verarbeitet; wechsle auf Cached-Plan/Fallback.")
         planner_memory["consecutive_llm_failures"] = int(planner_memory.get("consecutive_llm_failures", 0)) + 1
         if int(planner_memory.get("consecutive_llm_failures", 0)) >= int(planner_memory.get("max_consecutive_llm_failures", 2)):
             planner_memory["llm_disabled_until_step"] = int(planner_memory.get("current_step", 0)) + int(planner_memory.get("llm_cooldown_steps", 8))
