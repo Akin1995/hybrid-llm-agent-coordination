@@ -469,6 +469,27 @@ def distribute_messages(world: GridWorld, drones: List[Drone], messages: List[Me
         drone.receive_messages(messages, world)
 
 
+def purge_captured_thief_tracks(drones: List[Drone], captured_ids: set[int]) -> None:
+    if not captured_ids:
+        return
+    for drone in drones:
+        tracks = dict(drone.beliefs.get("thief_tracks", {}))
+        for tid in list(tracks.keys()):
+            try:
+                if int(tid) in captured_ids:
+                    tracks.pop(tid, None)
+            except Exception:
+                continue
+        drone.beliefs["thief_tracks"] = tracks
+
+        last_id = drone.beliefs.get("last_known_thief_id")
+        if last_id is not None and int(last_id) in captured_ids:
+            drone.beliefs["last_known_thief_id"] = None
+            drone.beliefs["last_known_thief_pos"] = None
+            drone.beliefs["last_known_thief_step"] = None
+            drone.last_known_thief_pos = None
+
+
 
 
 def aggregate_team_probability_map(world: GridWorld, drones: List[Drone]) -> Dict[Coordinate, float]:
@@ -1120,6 +1141,9 @@ def assign_targets_to_drones_with_last_known(world: GridWorld, drones: List[Dron
                 track_by_id[tid] = {"id": tid, "position": pos, "step": step}
 
     if thieves:
+        active_ids = {t.id for t in thieves}
+        # Veraltete Spuren (z. B. bereits gefangene Diebe) ignorieren
+        track_by_id = {tid: tr for tid, tr in track_by_id.items() if tid in active_ids}
         for t in thieves:
             # Ground truth optional als letzte Priorität, damit Verhalten robust bleibt
             if t.id not in track_by_id:
@@ -1793,12 +1817,15 @@ def run_dynamic_simulation_llm(
         draw_state(world, drones, thieves, step, output_dir, show_vision=True)
 
         remaining: List[Thief] = []
+        captured_now: set[int] = set()
         for thief in thieves:
             if check_capture(drones, thief, world):
                 captured_thief_ids.append(thief.id)
+                captured_now.add(thief.id)
                 print(f"Dieb {thief.id} gefangen in Schritt {step + 1}.")
             else:
                 remaining.append(thief)
+        purge_captured_thief_tracks(drones, captured_now)
         thieves = remaining
         if not thieves:
             all_thieves_caught = True
