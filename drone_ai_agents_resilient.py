@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import math
 import os
@@ -1543,6 +1544,31 @@ def resolve_drone_moves(world: GridWorld, drones: List[Drone], step: int) -> Non
         drone.commit_position(proposals[drone.id])
 
 
+
+
+def append_simulation_result_csv(csv_path: str, row: Dict[str, Any]) -> None:
+    fieldnames = [
+        "run_id",
+        "steps_total",
+        "thief_caught",
+        "step_caught",
+        "step_first_seen",
+        "llm_calls",
+        "cached_plan",
+        "fallback",
+        "degraded_steps",
+        "messages_sent",
+    ]
+
+    os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
+    file_exists = os.path.exists(csv_path)
+
+    with open(csv_path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow({k: row.get(k, "") for k in fieldnames})
+
 def run_dynamic_simulation_llm(
     width: int = 40,
     height: int = 40,
@@ -1559,6 +1585,8 @@ def run_dynamic_simulation_llm(
     llm_model: str = "gpt-5.4-mini",
     llm_structured: bool = True,
     seed: Optional[int] = None,
+    run_id: Optional[int] = None,
+    metrics_csv_path: str = "simulation_results.csv",
 ) -> None:
     """Simulation mit resilienter Planer-Architektur.
 
@@ -1639,6 +1667,9 @@ def run_dynamic_simulation_llm(
         "degraded_mode": False,
     }
 
+    thief_caught = False
+    step_caught: Optional[int] = None
+
     for step in range(max_steps):
         agent_positions = {thief.position} | {d.position for d in drones}
         world.update_dynamic_obstacles(agent_positions)
@@ -1681,6 +1712,8 @@ def run_dynamic_simulation_llm(
         draw_state(world, drones, thief, step, output_dir, show_vision=True)
 
         if check_capture(drones, thief, world):
+            thief_caught = True
+            step_caught = step + 1
             print(f"Dieb gefangen in Schritt {step + 1}.")
             break
 
@@ -1709,6 +1742,22 @@ def run_dynamic_simulation_llm(
         f"Nachrichten gesendet: {total_messages_sent}."
     )
 
+    append_simulation_result_csv(
+        metrics_csv_path,
+        {
+            "run_id": run_id if run_id is not None else "",
+            "steps_total": f"Simulation beendet nach {step + 1} Schritten",
+            "thief_caught": thief_caught,
+            "step_caught": step_caught if thief_caught else "",
+            "step_first_seen": first_sighting_step if first_sighting_step is not None else "",
+            "llm_calls": 0,
+            "cached_plan": planner_stats["cached_plan_reuse_count"],
+            "fallback": planner_stats["fallback_count"],
+            "degraded_steps": planner_stats["degraded_mode_steps"],
+            "messages_sent": total_messages_sent,
+        },
+    )
+
     if first_sighting_step is not None:
         print(f"Dieb erstmals gesichtet in Schritt {first_sighting_step}.")
     else:
@@ -1726,6 +1775,7 @@ if __name__ == "__main__":
             max_steps=200,
             use_llm=True,
             seed=i,
+            run_id=i,
             output_dir=f"frames_run_{i}",
             save_gif=f"dynamic_simulation_resilient_{i}.gif",
         )
