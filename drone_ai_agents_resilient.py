@@ -1808,7 +1808,10 @@ def run_dynamic_simulation_llm(
         if decision.degraded:
             planner_stats["degraded_mode_steps"] += 1
 
-        if len(thieves) > 1:
+        # Wenn kein valider LLM-Plan vorliegt, nutze die aktive Multi-Dieb-Heuristik
+        # direkt mit den aktuell lebenden Dieben. Das verhindert, dass Drohnen nach
+        # einem Capture zu lange auf veralteten (gecachten) Zielen verharren.
+        if thieves and not (decision.source == "llm" and decision.success):
             assign_targets_to_drones_with_last_known(world, drones, thief=None, thieves=thieves)
 
         resolve_drone_moves(world, drones, step)
