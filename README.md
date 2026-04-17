@@ -41,6 +41,10 @@ Das Ergebnis ist eine kombinierte Architektur aus klassischer AI (BFS, Heuristik
   - BDI-nahem Zustand (*Beliefs, Desires, Intentions*),
   - Rollenverhalten (`intercept`, `contain`, `investigate`, `search`, `reposition`).
 - **Dieb-Agent** mit eigener Sicht und Ausweichverhalten.
+- **Mehrere Diebe** möglich (`num_thieves`) mit einfacher Team-Heuristik:
+  - pro Dieb mindestens eine Drohne,
+  - restliche Drohnen nach Distanz verteilt,
+  - je Dieb-Cluster `intercept` + `contain`.
 - **Probabilistisches Tracking** (Diffusion + Ausschluss sichtbarer Freiflächen + Team-Aggregation).
 - **Kommunikation im Team** (`THIEF_SPOTTED`-Nachrichten).
 - **Resiliente Planung**:
@@ -171,6 +175,7 @@ run_dynamic_simulation_llm(
     static_obstacle_ratio=0.05,
     dynamic_obstacle_ratio=0.05,
     num_drones=6,
+    num_thieves=2,
     sight_radius_drone=5,
     sight_radius_thief=4,
     max_steps=250,
@@ -187,6 +192,7 @@ run_dynamic_simulation_llm(
 ### Wichtige Parameter
 
 - `num_drones`: Teamgröße.
+- `num_thieves`: Anzahl gleichzeitig aktiver Diebe.
 - `sight_radius_drone` / `sight_radius_thief`: Sichtweite von Drohnen/Dieb.
 - `static_obstacle_ratio` / `dynamic_obstacle_ratio`: Dichte der Hindernisse.
 - `max_steps`: maximale Laufzeit pro Simulation.
@@ -258,4 +264,3 @@ Die Simulation rendert standardmäßig pro Schritt ein PNG und daraus optional e
 Setze `seed` auf einen festen Wert. So bleiben Initialisierung und Zufallsschritte zwischen Runs vergleichbar.
 
 ---
-
