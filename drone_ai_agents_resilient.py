@@ -578,6 +578,7 @@ def build_strategic_planner_state(world: GridWorld, drones: List["Drone"], thief
     team_prob_map = aggregate_team_probability_map(world, drones)
     entropy = probability_entropy(team_prob_map)
     hotspots = top_probability_hotspots(team_prob_map, top_k=10, min_prob=0.0)
+    active_thief_targets = select_active_thief_targets(world, drones)
     overlap = coverage_overlap_score(world, drones)
     chokepoints = approximate_chokepoints(world, top_k=16)
 
@@ -650,6 +651,17 @@ def build_strategic_planner_state(world: GridWorld, drones: List["Drone"], thief
         "step_context": {
             "world_step": max((d.beliefs.get("world_step", 0) for d in drones), default=0),
             "thief_visible_to": visible_now,
+            "active_thief_targets": [
+                {
+                    "id": t["thief_id"],
+                    "position": [t["position"][0], t["position"][1]],
+                    "is_visible": bool(t["is_visible"]),
+                    "last_seen_age": t["last_seen_age"],
+                    "priority_rank": t["priority_rank"],
+                    "danger_score": t["danger_score"],
+                }
+                for t in active_thief_targets
+            ],
             "freshest_sighting_age": freshest_sighting_age,
             "sightings": sightings[-8:],
             "recent_reports": recent_reports,
@@ -1071,38 +1083,170 @@ def best_probability_target(drone: Drone, reserved_targets: set[Coordinate], wor
     return candidates[0]
 
 
+def select_active_thief_targets(world: GridWorld, drones: List[Drone]) -> List[Dict[str, Any]]:
+    """Team-Heuristik zur Auswahl aktiver Dieb-Ziele.
+
+    Prioritäten:
+    1) aktuell sichtbare Ziele (age == 0),
+    2) zuletzt gesichtete Ziele (frischer bevorzugt),
+    3) Hotspot-/Schätz-Ziele pro Drohne.
+    """
+    world_step = max((int(d.beliefs.get("world_step", 0)) for d in drones), default=0)
+    raw_candidates: List[Dict[str, Any]] = []
+
+    for drone in drones:
+        last_known = drone.beliefs.get("last_known_thief_pos")
+        last_step = drone.beliefs.get("last_known_thief_step")
+        if isinstance(last_known, tuple) and world.in_bounds(last_known) and world.passable(last_known):
+            age = max(0, world_step - int(last_step)) if last_step is not None else 999
+            is_visible = age == 0
+            raw_candidates.append({
+                "position": last_known,
+                "priority_rank": 0 if is_visible else 1,
+                "is_visible": is_visible,
+                "last_seen_age": age,
+                "score": (300 if is_visible else 180) - age,
+                "source_drone": drone.id,
+            })
+
+        hotspot = drone.beliefs.get("estimated_thief_pos")
+        if not isinstance(hotspot, tuple):
+            hotspot = best_probability_target(drone, set(), world)
+        if isinstance(hotspot, tuple) and world.in_bounds(hotspot) and world.passable(hotspot):
+            prob_map = drone.beliefs.get("thief_probability_map", {})
+            hotspot_prob = float(prob_map.get(hotspot, 0.0))
+            raw_candidates.append({
+                "position": hotspot,
+                "priority_rank": 2,
+                "is_visible": False,
+                "last_seen_age": None,
+                "score": 60 + hotspot_prob * 100,
+                "source_drone": drone.id,
+            })
+
+    if not raw_candidates:
+        return []
+
+    # Räumliche Clusterbildung: nahe Kandidaten als gleicher aktiver Dieb.
+    clusters: List[Dict[str, Any]] = []
+    for cand in sorted(raw_candidates, key=lambda c: (c["priority_rank"], -c["score"])):
+        pos = cand["position"]
+        attached = False
+        for cluster in clusters:
+            if manhattan(pos, cluster["position"]) <= 2:
+                cluster["members"].append(cand)
+                member_positions = [m["position"] for m in cluster["members"]]
+                cluster["position"] = min(member_positions, key=lambda p: sum(manhattan(p, mp) for mp in member_positions))
+                attached = True
+                break
+        if not attached:
+            clusters.append({"position": pos, "members": [cand]})
+
+    active_targets: List[Dict[str, Any]] = []
+    for idx, cluster in enumerate(clusters):
+        members = cluster["members"]
+        best = min(members, key=lambda m: (m["priority_rank"], m["last_seen_age"] if m["last_seen_age"] is not None else 999, -m["score"]))
+        visible = any(bool(m["is_visible"]) for m in members)
+        ages = [int(m["last_seen_age"]) for m in members if m["last_seen_age"] is not None]
+        freshest_age = min(ages) if ages else None
+        min_drone_dist = min((manhattan(d.position, cluster["position"]) for d in drones), default=0)
+        danger_score = float(best["score"]) + (40.0 if visible else 0.0) + max(0.0, 12.0 - float(min_drone_dist))
+        active_targets.append({
+            "thief_id": f"thief_{idx}",
+            "position": cluster["position"],
+            "is_visible": visible,
+            "last_seen_age": freshest_age,
+            "priority_rank": best["priority_rank"],
+            "danger_score": round(danger_score, 3),
+        })
+
+    active_targets.sort(
+        key=lambda t: (
+            t["priority_rank"],
+            999 if t["last_seen_age"] is None else t["last_seen_age"],
+            -float(t["danger_score"]),
+        )
+    )
+
+    for idx, target in enumerate(active_targets):
+        target["thief_id"] = f"thief_{idx}"
+    return active_targets
+
+
+def assign_drones_to_thief_cluster(
+    world: GridWorld,
+    drones: List[Drone],
+    target_base: Coordinate,
+    reserved_targets: set[Coordinate],
+) -> None:
+    surround_targets = [
+        target_base,
+        (target_base[0] + 1, target_base[1]),
+        (target_base[0] - 1, target_base[1]),
+        (target_base[0], target_base[1] + 1),
+        (target_base[0], target_base[1] - 1),
+        (target_base[0] + 1, target_base[1] + 1),
+        (target_base[0] - 1, target_base[1] - 1),
+        (target_base[0] + 1, target_base[1] - 1),
+        (target_base[0] - 1, target_base[1] + 1),
+    ]
+    valid = [p for p in surround_targets if world.in_bounds(p) and world.passable(p)]
+    if not valid:
+        valid = [target_base]
+
+    for idx, drone in enumerate(sorted(drones, key=lambda d: manhattan(d.position, target_base))):
+        available = [p for p in valid if p not in reserved_targets] or valid[:]
+        available.sort(key=lambda p: manhattan(drone.position, p))
+        chosen = available[0]
+        role = "intercept" if idx == 0 else "contain"
+        drone.set_intention(role, chosen)
+        reserved_targets.add(chosen)
+
+
 def assign_targets_to_drones_with_last_known(world: GridWorld, drones: List[Drone], thief: Optional[Thief]) -> None:
     """Fallback-Heuristik mit formalisierter BDI-Rolle, Sektorensuche und Wahrscheinlichkeitskarte."""
     reserved_targets: set[Coordinate] = set()
-    known_positions = [d.beliefs.get("last_known_thief_pos") for d in drones if d.beliefs.get("last_known_thief_pos") is not None]
+    active_thief_targets = select_active_thief_targets(world, drones)
 
     for drone in drones:
         drone.update_desires()
 
-    if known_positions:
-        target_base = known_positions[-1]
-        surround_targets = [
-            target_base,
-            (target_base[0] + 1, target_base[1]),
-            (target_base[0] - 1, target_base[1]),
-            (target_base[0], target_base[1] + 1),
-            (target_base[0], target_base[1] - 1),
-            (target_base[0] + 1, target_base[1] + 1),
-            (target_base[0] - 1, target_base[1] - 1),
-            (target_base[0] + 1, target_base[1] - 1),
-            (target_base[0] - 1, target_base[1] + 1),
-        ]
-        valid = [p for p in surround_targets if world.in_bounds(p) and world.passable(p)]
-        for idx, drone in enumerate(drones):
-            available = [p for p in valid if p not in reserved_targets] or valid[:]
-            if not available:
-                drone.set_intention("intercept", target_base)
-                continue
-            available.sort(key=lambda p: manhattan(drone.position, p))
-            chosen = available[0]
-            role = "intercept" if idx == 0 else "contain"
-            drone.set_intention(role, chosen)
-            reserved_targets.add(chosen)
+    if active_thief_targets:
+        remaining = set(drones)
+        cluster_assignments: Dict[int, List[Drone]] = {idx: [] for idx in range(len(active_thief_targets))}
+
+        # Mindestens eine Drohne pro aktivem Dieb (solange verfügbar), nach Priorität.
+        for idx, target in enumerate(active_thief_targets):
+            if not remaining:
+                break
+            chosen = min(
+                remaining,
+                key=lambda d: (manhattan(d.position, target["position"]), d.stuck_steps, d.id),
+            )
+            cluster_assignments[idx].append(chosen)
+            remaining.remove(chosen)
+
+        # Restdrohnen auf gefährlichere/nahe Diebe verteilen.
+        while remaining:
+            drone = min(remaining, key=lambda d: (d.stuck_steps, d.id))
+            best_idx = max(
+                range(len(active_thief_targets)),
+                key=lambda i: (
+                    float(active_thief_targets[i]["danger_score"]) - 1.75 * manhattan(drone.position, active_thief_targets[i]["position"]),
+                    -active_thief_targets[i]["priority_rank"],
+                ),
+            )
+            cluster_assignments[best_idx].append(drone)
+            remaining.remove(drone)
+
+        for idx, assigned_drones in cluster_assignments.items():
+            if assigned_drones:
+                assign_drones_to_thief_cluster(
+                    world=world,
+                    drones=assigned_drones,
+                    target_base=active_thief_targets[idx]["position"],
+                    reserved_targets=reserved_targets,
+                )
         return
 
     # probabilistische Hotspots zuerst untersuchen
