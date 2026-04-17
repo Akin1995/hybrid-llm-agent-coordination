@@ -82,9 +82,9 @@ Das Ergebnis ist eine kombinierte Architektur aus klassischer AI (BFS, Heuristik
 4. Alte Sichtungen verfallen über Zeit (Decay).
 5. Team-Planung entscheidet Rollen/Ziele (LLM oder Fallback).
 6. Drohnen bewegen sich koordiniert und fair aufgelöst.
-7. Dieb zieht.
-8. Frame wird gezeichnet.
-9. Capture-Bedingungen werden geprüft.
+7. Alle aktiven Diebe ziehen.
+8. Capture-Bedingungen werden pro Dieb geprüft; gefangene Diebe werden dynamisch aus der Simulation entfernt.
+9. Frame wird gezeichnet.
 
 ## Wie die Simulation funktioniert
 
@@ -171,6 +171,7 @@ run_dynamic_simulation_llm(
     static_obstacle_ratio=0.05,
     dynamic_obstacle_ratio=0.05,
     num_drones=6,
+    num_thieves=1,
     sight_radius_drone=5,
     sight_radius_thief=4,
     max_steps=250,
@@ -187,12 +188,19 @@ run_dynamic_simulation_llm(
 ### Wichtige Parameter
 
 - `num_drones`: Teamgröße.
+- `num_thieves`: Anzahl initialer Diebe (werden auf eindeutigen freien Zellen gespawnt).
 - `sight_radius_drone` / `sight_radius_thief`: Sichtweite von Drohnen/Dieb.
 - `static_obstacle_ratio` / `dynamic_obstacle_ratio`: Dichte der Hindernisse.
 - `max_steps`: maximale Laufzeit pro Simulation.
 - `use_llm`: aktiviert/deaktiviert LLM-Planung.
 - `llm_structured`: nutzt JSON-Schema-Ausgabe für robustere Parsing-/Validierungspfad.
 - `seed`: reproduzierbare Runs.
+
+### Mehrere Diebe & dynamische Entfernung
+
+- Jeder Dieb besitzt eine stabile `id`.
+- Sichtungen/Nachrichten enthalten die `thief_id`, damit Zuordnungen bei mehreren Dieben eindeutig bleiben.
+- Wird ein Dieb gefangen, wird er sofort aus der aktiven Liste entfernt; die Simulation läuft mit verbleibenden Dieben weiter, bis alle gefangen sind oder `max_steps` erreicht ist.
 
 ## OpenAI/LLM-Integration
 
@@ -258,4 +266,3 @@ Die Simulation rendert standardmäßig pro Schritt ein PNG und daraus optional e
 Setze `seed` auf einen festen Wert. So bleiben Initialisierung und Zufallsschritte zwischen Runs vergleichbar.
 
 ---
-

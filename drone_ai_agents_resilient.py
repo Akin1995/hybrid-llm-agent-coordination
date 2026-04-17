@@ -195,6 +195,7 @@ class Drone:
 
         self.beliefs: Dict[str, Any] = {
             "last_known_thief_pos": None,
+            "last_known_thief_id": None,
             "last_known_thief_step": None,
             "estimated_thief_pos": None,
             "thief_probability_map": {},
@@ -212,7 +213,7 @@ class Drone:
         if not self.beliefs.get("thief_probability_map"):
             self.beliefs["thief_probability_map"] = make_uniform_probability_map(world)
 
-    def update_beliefs(self, world: GridWorld, thief: "Thief", step: int) -> List[Message]:
+    def update_beliefs(self, world: GridWorld, thieves: List["Thief"], step: int) -> List[Message]:
         messages: List[Message] = []
         self.beliefs["world_step"] = step
         self.initialize_probability_map(world)
@@ -224,25 +225,29 @@ class Drone:
 
         prob_map = diffuse_probability_map(world, dict(self.beliefs.get("thief_probability_map", {})))
 
+        visible_thieves = [t for t in thieves if manhattan(self.position, t.position) <= self.sight_radius]
+
         # Zellen im Sichtbereich ohne Dieb werden ausgeschlossen
-        if manhattan(self.position, thief.position) > self.sight_radius:
+        if not visible_thieves:
             for cell in visible_free:
                 prob_map[cell] = 0.0
 
-        if manhattan(self.position, thief.position) <= self.sight_radius:
-            self.last_known_thief_pos = thief.position
-            self.beliefs["last_known_thief_pos"] = thief.position
+        if visible_thieves:
+            observed = min(visible_thieves, key=lambda t: manhattan(self.position, t.position))
+            self.last_known_thief_pos = observed.position
+            self.beliefs["last_known_thief_pos"] = observed.position
+            self.beliefs["last_known_thief_id"] = observed.id
             self.beliefs["last_known_thief_step"] = step
             prob_map = {cell: 0.0 for cell in prob_map}
-            prob_map[thief.position] = 1.0
-            predicted = thief.position
+            prob_map[observed.position] = 1.0
+            predicted = observed.position
             msg = Message(
                 sender=self.id,
                 type="THIEF_SPOTTED",
-                position=thief.position,
+                position=observed.position,
                 step=step,
                 confidence=1.0,
-                payload={"observer_pos": self.position},
+                payload={"observer_pos": self.position, "thief_id": observed.id},
             )
             messages.append(msg)
             self.message_log.append(msg)
@@ -253,8 +258,8 @@ class Drone:
         self.beliefs["thief_probability_map"] = normalize_distribution(prob_map)
         return messages
 
-    def observe(self, world: GridWorld, thief: "Thief", step: int) -> List[Message]:
-        return self.update_beliefs(world, thief, step)
+    def observe(self, world: GridWorld, thieves: List["Thief"], step: int) -> List[Message]:
+        return self.update_beliefs(world, thieves, step)
 
     def receive_messages(self, messages: List[Message], world: Optional[GridWorld] = None) -> None:
         if not messages:
@@ -272,11 +277,13 @@ class Drone:
                 "position": msg.position,
                 "step": msg.step,
                 "confidence": msg.confidence,
+                "thief_id": msg.payload.get("thief_id"),
             })
             if msg.type == "THIEF_SPOTTED" and msg.position is not None:
                 self.last_known_thief_pos = msg.position
                 self.beliefs["last_known_thief_pos"] = msg.position
                 self.beliefs["last_known_thief_step"] = msg.step
+                self.beliefs["last_known_thief_id"] = msg.payload.get("thief_id")
                 if world is not None:
                     if not prob_map:
                         prob_map = make_uniform_probability_map(world)
@@ -300,6 +307,7 @@ class Drone:
         if step - int(last_step) > forget_after:
             self.last_known_thief_pos = None
             self.beliefs["last_known_thief_pos"] = None
+            self.beliefs["last_known_thief_id"] = None
 
     def update_desires(self) -> None:
         if self.beliefs.get("last_known_thief_pos") is not None:
@@ -392,7 +400,8 @@ class Drone:
 class Thief:
     """Dieb mit begrenzter Sicht."""
 
-    def __init__(self, position: Coordinate, sight_radius: int = 3, stamina_max: int = 25, stamina_recovery: int = 2):
+    def __init__(self, id: int, position: Coordinate, sight_radius: int = 3, stamina_max: int = 25, stamina_recovery: int = 2):
+        self.id = id
         self.position = position
         self.prev_position = position
         self.sight_radius = sight_radius
@@ -434,10 +443,10 @@ class Thief:
         self.stamina = min(self.stamina + self.stamina_recovery, self.stamina_max)
 
 
-def collect_team_messages(world: GridWorld, drones: List[Drone], thief: Thief, step: int) -> List[Message]:
+def collect_team_messages(world: GridWorld, drones: List[Drone], thieves: List[Thief], step: int) -> List[Message]:
     messages: List[Message] = []
     for drone in drones:
-        messages.extend(drone.observe(world, thief, step))
+        messages.extend(drone.observe(world, thieves, step))
     return messages
 
 
@@ -574,7 +583,7 @@ def candidate_targets_for_drone(
     return result[:max_candidates]
 
 
-def build_strategic_planner_state(world: GridWorld, drones: List["Drone"], thief: "Thief") -> Dict[str, Any]:
+def build_strategic_planner_state(world: GridWorld, drones: List["Drone"], thieves: List["Thief"]) -> Dict[str, Any]:
     team_prob_map = aggregate_team_probability_map(world, drones)
     entropy = probability_entropy(team_prob_map)
     hotspots = top_probability_hotspots(team_prob_map, top_k=10, min_prob=0.0)
@@ -587,13 +596,16 @@ def build_strategic_planner_state(world: GridWorld, drones: List["Drone"], thief
     recent_reports: List[Dict[str, Any]] = []
 
     for drone in drones:
-        if manhattan(drone.position, thief.position) <= drone.sight_radius:
-            visible_now.append(drone.id)
+        for thief in thieves:
+            if manhattan(drone.position, thief.position) <= drone.sight_radius:
+                visible_now.append(drone.id)
+                break
 
         lk = drone.beliefs.get("last_known_thief_pos")
         lk_step = drone.beliefs.get("last_known_thief_step")
         if isinstance(lk, tuple):
             sightings.append({
+                "thief_id": drone.beliefs.get("last_known_thief_id"),
                 "position": [lk[0], lk[1]],
                 "step": lk_step,
                 "age": None if lk_step is None else max(0, drone.beliefs.get("world_step", 0) - int(lk_step)),
@@ -647,6 +659,7 @@ def build_strategic_planner_state(world: GridWorld, drones: List["Drone"], thief
     return {
         "grid_size": [world.width, world.height],
         "num_drones": len(drones),
+        "num_thieves_active": len(thieves),
         "step_context": {
             "world_step": max((d.beliefs.get("world_step", 0) for d in drones), default=0),
             "thief_visible_to": visible_now,
@@ -733,7 +746,7 @@ class SafetyManager:
 
     @staticmethod
     def enforce_degraded_mode(world: GridWorld, drones: List[Drone], planner_memory: Dict[str, Any]) -> None:
-        assign_targets_to_drones_with_last_known(world, drones, Thief((-1, -1)))
+        assign_targets_to_drones_with_last_known(world, drones, [])
         planner_memory["degraded_mode"] = True
         planner_memory["mode"] = "degraded_fallback"
 
@@ -851,7 +864,7 @@ def fallback_or_hold_plan(world: GridWorld, drones: List[Drone], planner_memory:
             assignments_applied=applied,
         )
 
-    assign_targets_to_drones_with_last_known(world, drones, thief=None)
+    assign_targets_to_drones_with_last_known(world, drones, thieves=None)
     remember_plan(planner_memory, drones, mode="degraded_fallback", step=int(planner_memory.get("current_step", 0)))
     planner_memory["freeze_steps_remaining"] = 0
     return PlannerDecision(
@@ -867,7 +880,7 @@ def fallback_or_hold_plan(world: GridWorld, drones: List[Drone], planner_memory:
 def choose_team_plan(
     world: GridWorld,
     drones: List[Drone],
-    thief: Thief,
+    thieves: List[Thief],
     planner_memory: Dict[str, Any],
     use_llm: bool,
     llm_api_key: Optional[str],
@@ -892,7 +905,7 @@ def choose_team_plan(
         planned = assign_targets_with_llm_hybrid(
             world=world,
             drones=drones,
-            thief=thief,
+            thieves=thieves,
             planner_memory=planner_memory,
             api_key=llm_api_key,
             model=llm_model,
@@ -1019,18 +1032,18 @@ Keine Erklärungen außerhalb des JSON.
 """
 
 
-def build_llm_prompt_state(world: GridWorld, drones: List[Drone], thief: Thief) -> Dict[str, Any]:
+def build_llm_prompt_state(world: GridWorld, drones: List[Drone], thieves: List[Thief]) -> Dict[str, Any]:
     visible_obstacles: set[Coordinate] = set()
-    thief_visible = False
+    visible_thieves: Dict[int, Coordinate] = {}
 
     for drone in drones:
-        if manhattan(drone.position, thief.position) <= drone.sight_radius:
-            thief_visible = True
+        for thief in thieves:
+            if manhattan(drone.position, thief.position) <= drone.sight_radius:
+                visible_thieves[thief.id] = thief.position
         for obs in world.obstacles:
             if manhattan(obs, drone.position) <= drone.sight_radius:
                 visible_obstacles.add(obs)
 
-    thief_pos = thief.position if thief_visible else None
     drone_info = []
     for d in drones:
         prob_map = d.beliefs.get("thief_probability_map", {})
@@ -1051,7 +1064,8 @@ def build_llm_prompt_state(world: GridWorld, drones: List[Drone], thief: Thief) 
         })
 
     return {
-        "thief_position": thief_pos,
+        "visible_thieves": [{"id": tid, "position": [pos[0], pos[1]]} for tid, pos in sorted(visible_thieves.items())],
+        "num_thieves_active": len(thieves),
         "drones": drone_info,
         "visible_obstacles": sorted(list(visible_obstacles)),
         "grid_size": [world.width, world.height],
@@ -1071,7 +1085,7 @@ def best_probability_target(drone: Drone, reserved_targets: set[Coordinate], wor
     return candidates[0]
 
 
-def assign_targets_to_drones_with_last_known(world: GridWorld, drones: List[Drone], thief: Optional[Thief]) -> None:
+def assign_targets_to_drones_with_last_known(world: GridWorld, drones: List[Drone], thieves: Optional[List[Thief]]) -> None:
     """Fallback-Heuristik mit formalisierter BDI-Rolle, Sektorensuche und Wahrscheinlichkeitskarte."""
     reserved_targets: set[Coordinate] = set()
     known_positions = [d.beliefs.get("last_known_thief_pos") for d in drones if d.beliefs.get("last_known_thief_pos") is not None]
@@ -1128,7 +1142,7 @@ def assign_targets_to_drones_with_last_known(world: GridWorld, drones: List[Dron
 def assign_targets_with_openai_partial(
     world: GridWorld,
     drones: List[Drone],
-    thief: Thief,
+    thieves: List[Thief],
     api_key: Optional[str] = None,
     model: str = "gpt-5.4-mini",
     use_structured: bool = True,
@@ -1141,7 +1155,7 @@ def assign_targets_with_openai_partial(
     if not key:
         return False
 
-    user_prompt = build_llm_prompt_state(world, drones, thief)
+    user_prompt = build_llm_prompt_state(world, drones, thieves)
     system_prompt = """
 Du bist ein zentraler Koordinationsagent für ein kooperatives Multi-Agenten-System aus Drohnen in einer Grid-Welt.
 
@@ -1323,7 +1337,7 @@ Optimiere das Verhalten des gesamten Teams, nicht einzelner Drohnen.
 def assign_targets_with_llm_hybrid(
     world: GridWorld,
     drones: List[Drone],
-    thief: Thief,
+    thieves: List[Thief],
     planner_memory: Dict[str, Any],
     api_key: Optional[str] = None,
     model: str = "gpt-5.4-mini",
@@ -1336,7 +1350,7 @@ def assign_targets_with_llm_hybrid(
     if not key:
         return False
 
-    planner_state = build_strategic_planner_state(world, drones, thief)
+    planner_state = build_strategic_planner_state(world, drones, thieves)
 
     messages = [
         {"role": "system", "content": HYBRID_SYSTEM_PROMPT},
@@ -1399,7 +1413,7 @@ def assign_targets_with_llm_hybrid(
 def draw_state(
     world: GridWorld,
     drones: List[Drone],
-    thief: Thief,
+    thieves: List[Thief],
     step: int,
     path: str,
     show_vision: bool = True,
@@ -1500,9 +1514,11 @@ def draw_state(
         ax.add_patch(circ)
         ax.text(drone.position[0] + 0.05, drone.position[1] + 0.2, f"{drone.id}:{drone.role[:3]}", fontsize=8)
 
-    x = thief.position[0] + 0.5
-    y = thief.position[1] + 0.5
-    ax.plot(x, y, marker="x", color="red", markersize=16, markeredgewidth=4)
+    for thief in thieves:
+        x = thief.position[0] + 0.5
+        y = thief.position[1] + 0.5
+        ax.plot(x, y, marker="x", color="red", markersize=14, markeredgewidth=3)
+        ax.text(thief.position[0] + 0.05, thief.position[1] + 0.85, f"T{thief.id}", color="red", fontsize=8)
     filename = f"{path}/frame_{step:03d}.png"
     fig.savefig(filename, bbox_inches="tight")
     plt.close(fig)
@@ -1575,6 +1591,7 @@ def run_dynamic_simulation_llm(
     static_obstacle_ratio: float = 0.05,
     dynamic_obstacle_ratio: float = 0.05,
     num_drones: int = 6,
+    num_thieves: int = 1,
     sight_radius_drone: int = 5,
     sight_radius_thief: int = 4,
     max_steps: int = 250,
@@ -1624,6 +1641,12 @@ def run_dynamic_simulation_llm(
             dynamic_obstacles.add(pos)
 
     world = GridWorld(width, height, list(static_obstacles), list(dynamic_obstacles))
+    free_cell_count = len(world.all_free_cells())
+    if num_thieves + num_drones > free_cell_count:
+        raise ValueError(
+            f"Nicht genügend freie Zellen für {num_drones} Drohnen + {num_thieves} Diebe "
+            f"(frei: {free_cell_count})."
+        )
 
     def random_free_position(exclude: set[Coordinate]) -> Coordinate:
         while True:
@@ -1631,10 +1654,15 @@ def run_dynamic_simulation_llm(
             if pos not in world.obstacles and pos not in exclude:
                 return pos
 
-    thief = Thief(random_free_position(set()), sight_radius=sight_radius_thief)
+    thieves: List[Thief] = []
+    spawn_occupied: set[Coordinate] = set()
+    for thief_id in range(num_thieves):
+        pos = random_free_position(spawn_occupied)
+        thieves.append(Thief(id=thief_id, position=pos, sight_radius=sight_radius_thief))
+        spawn_occupied.add(pos)
 
     drones: List[Drone] = []
-    occupied: set[Coordinate] = {thief.position}
+    occupied: set[Coordinate] = {t.position for t in thieves}
     for i in range(num_drones):
         pos = random_free_position(occupied)
         drone = Drone(i, pos, sight_radius=sight_radius_drone)
@@ -1671,10 +1699,10 @@ def run_dynamic_simulation_llm(
     step_caught: Optional[int] = None
 
     for step in range(max_steps):
-        agent_positions = {thief.position} | {d.position for d in drones}
+        agent_positions = {t.position for t in thieves} | {d.position for d in drones}
         world.update_dynamic_obstacles(agent_positions)
 
-        messages = collect_team_messages(world, drones, thief, step)
+        messages = collect_team_messages(world, drones, thieves, step)
         total_messages_sent += len(messages)
         distribute_messages(world, drones, messages)
 
@@ -1689,7 +1717,7 @@ def run_dynamic_simulation_llm(
         decision = choose_team_plan(
             world=world,
             drones=drones,
-            thief=thief,
+            thieves=thieves,
             planner_memory=planner_memory,
             use_llm=llm_allowed_now,
             llm_api_key=llm_api_key,
@@ -1708,14 +1736,26 @@ def run_dynamic_simulation_llm(
             planner_stats["degraded_mode_steps"] += 1
 
         resolve_drone_moves(world, drones, step)
-        thief.choose_action(world, [d.position for d in drones])
-        draw_state(world, drones, thief, step, output_dir, show_vision=True)
+        for thief in thieves:
+            thief.choose_action(world, [d.position for d in drones])
 
-        if check_capture(drones, thief, world):
+        caught_ids: List[int] = []
+        survivors: List[Thief] = []
+        for thief in thieves:
+            if check_capture(drones, thief, world):
+                caught_ids.append(thief.id)
+            else:
+                survivors.append(thief)
+        thieves = survivors
+
+        draw_state(world, drones, thieves, step, output_dir, show_vision=True)
+
+        if caught_ids:
             thief_caught = True
-            step_caught = step + 1
-            print(f"Dieb gefangen in Schritt {step + 1}.")
-            break
+            print(f"Dieb(e) gefangen in Schritt {step + 1}: {caught_ids}.")
+            if not thieves:
+                step_caught = step + 1
+                break
 
     if save_gif:
         frames = []
